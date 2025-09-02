@@ -1,28 +1,42 @@
 import json
 import os
-import re
 from datetime import datetime, timedelta
+import re
 
-# Configuration to match TypeScript/TSX settings from config.ts
+# Configuration
 JSON_FOLDER = "youtube"
 SRT_FOLDER = "srt_output"
 
-# Video settings matching config.ts
+# Video settings
 FPS = 60
 WIDTH = 2560
 HEIGHT = 1440
 
-# Timing settings matching config.ts
-INTRO_DELAY_FRAMES = 120  # Delay intro dalam frame (2 detik)
-ENDING_DURATION = 5       # Durasi ending dalam detik
-DURASI_PER_CARD_DETIK = 6 # Durasi per kartu dalam detik
+# Timing settings
+INTRO_DELAY_FRAMES = 120  # 2 seconds delay
+ENDING_DURATION = 5       # 5 seconds ending duration
+DURASI_PER_CARD_DETIK = 6 # 6 seconds per card
 
 # Convert frame delays to seconds
-INTRO_DELAY_SECONDS = INTRO_DELAY_FRAMES / FPS  # 2 seconds
+INTRO_DELAY_SECONDS = INTRO_DELAY_FRAMES / FPS
 
 os.makedirs(SRT_FOLDER, exist_ok=True)
 
-# Tambahkan mapping alias field agar lebih fleksibel
+# Helper functions to format numbers
+def format_number(num):
+    if num >= 1_000_000_000:
+        return f"{num/1_000_000_000:.1f}B"
+    elif num >= 1_000_000:
+        return f"{num/1_000_000:.1f}M"
+    elif num >= 1_000:
+        return f"{num/1_000:.1f}K"
+    return str(num)
+
+def parse_date(date_str):
+    try:
+        return datetime.strptime(date_str.split("T")[0], "%Y-%m-%d")
+    except (ValueError, AttributeError):
+        return datetime(1900, 1, 1)
 FIELD_ALIASES = {
     "name": ["name", "nama", "player_name"],
     "full_name": ["full_name", "nama_lengkap", "fullname"],
@@ -171,26 +185,28 @@ def generate_srt_flexible(json_file):
     """
     try:
         with open(json_file, "r", encoding="utf-8") as f:
-            raw_players = json.load(f)
+            channels = json.load(f)
     except (json.JSONDecodeError, FileNotFoundError) as e:
         print(f"❌ ERROR: Failed to load {json_file}: {e}")
         return
 
-    if not raw_players:
-        print(f"⚠ WARNING: No players found in {json_file}")
-        return
-
-    # Use validation and sorting function matching TypeScript logic
-    players = validate_and_sort_players(raw_players)
-    
-    if not players:
-        print(f"⚠ WARNING: No valid players found in {json_file}")
+    if not channels:
+        print(f"⚠ WARNING: No channels found in {json_file}")
         return
     
-    # Automatically read total cards from JSON (matching config.ts cardsToShow logic)
-    cards_to_show = len(players)
-    team_name = players[0]["team"] if players else "Unknown Team"
-    srt_filename = os.path.join(SRT_FOLDER, os.path.basename(json_file).replace(".json", "_flexible.srt"))
+    # Sort channels exactly like CardList.tsx:
+    # 1. followers_count (ascending - terbanyak di akhir)
+    # 2. date (terlama di atas) if followers equal
+    # 3. name as final tiebreaker
+    channels.sort(key=lambda x: (
+        x.get("followers_count", 0),  # followers count first
+        parse_date(x.get("date", "")) if x.get("date") else datetime(1900, 1, 1),  # date second (oldest first)
+        x.get("name", "").lower()  # name last
+    ))
+    
+    cards_to_show = len(channels)
+    country_name = os.path.basename(json_file).replace(".json", "").capitalize()
+    srt_filename = os.path.join(SRT_FOLDER, f"{country_name}_flexible.srt")
 
     # Calculate durations matching config.ts functions
     total_duration_frames = calculate_total_duration(cards_to_show)
@@ -198,28 +214,27 @@ def generate_srt_flexible(json_file):
     total_duration_seconds = get_duration_in_seconds(total_duration_frames)
     total_video_duration_seconds = get_duration_in_seconds(total_video_duration_frames)
 
-    print(f"📊 Processing {json_file} (config.ts settings):")
-    print(f"   - Total players in JSON: {len(raw_players)}")
-    print(f"   - Valid players: {len(players)}")
-    print(f"   - Cards to show: {cards_to_show} (auto-read from JSON)")
-    print(f"   - Duration per card: {DURASI_PER_CARD_DETIK} seconds (from config.ts)")
-    print(f"   - Intro delay: {INTRO_DELAY_SECONDS} seconds (from config.ts)")
+    print(f"📊 Processing {json_file}:")
+    print(f"   - Total channels: {len(channels)}")
+    print(f"   - Cards to show: {cards_to_show}")
+    print(f"   - Duration per card: {DURASI_PER_CARD_DETIK} seconds")
+    print(f"   - Intro delay: {INTRO_DELAY_SECONDS} seconds")
     print(f"   - Total content duration: {total_duration_seconds:.1f} seconds")
     print(f"   - Total video duration: {total_video_duration_seconds:.1f} seconds")
 
     with open(srt_filename, "w", encoding="utf-8") as srt_file:
         index = 1
         
-        # Opening title - using INTRO_DELAY_SECONDS from config.ts
+        # Opening title
         srt_file.write(
             f"{index}\n"
             f"00:00:00,000 --> {format_time(INTRO_DELAY_SECONDS)}\n"
-            f"Riwayat Pemain {team_name} 2017-2025\n\n"
+            f"100 Most Subscribed YouTube Channels - {country_name}\n\n"
         )
         index += 1
 
-        # Player entries - show all players from JSON
-        for i, player in enumerate(players):
+        # Channel entries
+        for i, channel in enumerate(channels):
             start_seconds = INTRO_DELAY_SECONDS + i * DURASI_PER_CARD_DETIK
             end_seconds = INTRO_DELAY_SECONDS + (i + 1) * DURASI_PER_CARD_DETIK
 
@@ -227,51 +242,44 @@ def generate_srt_flexible(json_file):
                 print(f"⚠ WARNING: Invalid duration at entry {index}")
                 continue
 
-            # Format roles string
-            roles = player.get("roles", [])
-            if isinstance(roles, list) and roles:
-                roles_str = ", ".join(clean_text(r) for r in roles if r and clean_text(r))
-            else:
-                roles_str = ""
-            # Format heros string (optional)
-            heros = player.get("heros", [])
-            if isinstance(heros, list) and heros:
-                heros_str = ", ".join(clean_text(h) for h in heros if h and clean_text(h))
-            else:
-                heros_str = ""
-            # Clean up the date display
-            join_date = player.get("date", "")
-            if join_date and join_date != "1900-01-01" and join_date != "no data":
-                # Try to format the date nicely
-                try:
-                    parsed_date = parse_date(join_date)
-                    if parsed_date.year > 1900:
-                        formatted_date = parsed_date.strftime("%d %B %Y")
-                    else:
-                        formatted_date = join_date
-                except:
-                    formatted_date = join_date
+            # Format channel data
+            name = channel.get("name", "")
+            full_name = channel.get("full_name", "")
+            followers = format_number(channel.get("followers_count", 0))
+            views = format_number(channel.get("views_count", 0))
+            videos = format_number(channel.get("videos_count", 0))
+            join_date = channel.get("date", "")
+
+            if join_date:
+                parsed_date = parse_date(join_date)
+                formatted_date = parsed_date.strftime("%d %B %Y") if parsed_date.year > 1900 else ""
             else:
                 formatted_date = ""
+
             # Compose subtitle entry lines
             lines = []
-            if player['name']:
-                if player['nation']:
-                    lines.append(f"{player['name']} ({player['nation']})")
-                    lines.append(f"({player['league']})")
-                else:
-                    lines.append(f"{player['name']}")
-            info_parts = []
-            if player['full_name']:
-                info_parts.append(f"Name: {player['full_name']}")
+            
+            # First line: Channel name and full name
+            if name and full_name and name.lower() != full_name.lower():
+                lines.append(f"{name} - {full_name}")
+            else:
+                lines.append(name or full_name)
+
+            # Second line: Stats
+            stats = []
+            if followers:
+                stats.append(f"Subscribers: {followers}")
+            if views:
+                stats.append(f"Views: {views}")
+            if videos:
+                stats.append(f"Videos: {videos}")
+            if stats:
+                lines.append(" | ".join(stats))
+
+            # Third line: Join date
             if formatted_date:
-                info_parts.append(f"Maagang pagpasok sa MPL PH : {team_name}: {formatted_date}")
-            if roles_str:
-                info_parts.append(f"Roles: [{roles_str}]")
-            if heros_str:
-                info_parts.append(f"Heros: [{heros_str}]")
-            if info_parts:
-                lines.append(" | ".join(info_parts))
+                lines.append(f"Joined youtube at: {formatted_date}")
+
             srt_file.write(
                 f"{index}\n"
                 f"{format_time(start_seconds)} --> {format_time(end_seconds)}\n"
@@ -279,32 +287,31 @@ def generate_srt_flexible(json_file):
             )
             index += 1
 
-        # Ending subtitle - using ENDING_DURATION from config.ts
+        # Ending subtitle
         ending_start = INTRO_DELAY_SECONDS + cards_to_show * DURASI_PER_CARD_DETIK
         ending_end = ending_start + ENDING_DURATION
         srt_file.write(
             f"{index}\n"
             f"{format_time(ending_start)} --> {format_time(ending_end)}\n"
-            f"Terima kasih sudah menonton!\n\n"
+            f"Thanks for watching!\n\n"
         )
 
-    print(f"✅ Generated: {srt_filename} with {cards_to_show} players")
+    print(f"✅ Generated: {srt_filename} with {cards_to_show} channels")
     print(f"   - Content duration: {total_duration_seconds:.1f} seconds")
     print(f"   - Total video duration: {total_video_duration_seconds:.1f} seconds")
     return srt_filename
 
-# Process all JSON files with config.ts settings
 def main():
-    print("🚀 Starting SRT generation with config.ts settings...")
+    print("🚀 Starting YouTube Channel SRT generation...")
     print(f"📋 Configuration:")
     print(f"   - FPS: {FPS}")
     print(f"   - Duration per card: {DURASI_PER_CARD_DETIK} seconds")
     print(f"   - Intro delay: {INTRO_DELAY_SECONDS} seconds")
     print(f"   - Ending duration: {ENDING_DURATION} seconds")
-    print(f"   - Cards: Auto-read from JSON files")
     
-    json_files = [f for f in os.listdir(JSON_FOLDER) if f.endswith(".json")]
-    print(f"\n📁 Found {len(json_files)} JSON files to process")
+    # Only process the top-level JSON files (exclude the 100 subfolder)
+    json_files = [f for f in os.listdir(JSON_FOLDER) if f.endswith(".json") and not os.path.isdir(os.path.join(JSON_FOLDER, f))]
+    print(f"\n📁 Found {len(json_files)} country JSON files to process")
     
     for file in json_files:
         print(f"\n{'='*50}")
@@ -312,7 +319,7 @@ def main():
         generate_srt_flexible(json_path)
     
     print(f"\n{'='*50}")
-    print(f"🎉 SRT generation completed with config.ts settings!")
+    print(f"🎉 SRT generation completed!")
 
 if __name__ == "__main__":
-    main() 
+    main()

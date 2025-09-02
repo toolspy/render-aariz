@@ -30,6 +30,8 @@ export const RemotionRoot: React.FC = () => {
           durasiPerCardDetik: CONFIG.durasiPerCardDetik,
           introDelay: CONFIG.introDelay,
           endingDuration: CONFIG.endingDuration * CONFIG.FPS,
+          backgroundColor: '#212121',
+          // backgroundColor: '#FFF',
         }}
       />
     </>
